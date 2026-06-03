@@ -6,19 +6,3 @@ cmake-build-*/
 *.o
 *.ini
 !visc.default.ini
-
-# InsForge & AI agent skills
-vendor/
-.insforge
-.agent
-.agents
-.augment
-.claude
-.cline
-.github/copilot*
-.kilocode
-.qoder
-.qwen
-.roo
-.trae
-.windsurf
