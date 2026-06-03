@@ -2,7 +2,7 @@
 
 Cross-platform audio visualizer written in C/C++ with SDL2, PortAudio, and Dear ImGui. Windows is the primary target; macOS and Linux should build with the same CMake flow.
 
-![Screenshot](imgs/Screenshot%202026-06-02%20175806.png)
+![Screenshot](imgs/demo.gif)
 
 ## Features
 
