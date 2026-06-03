@@ -1,6 +1,8 @@
-# visc — audio visualizer (Visual C)
+# visc — audio visualizer
 
 Cross-platform audio visualizer written in C/C++ with SDL2, PortAudio, and Dear ImGui. Windows is the primary target; macOS and Linux should build with the same CMake flow.
+
+![Screenshot](imgs/Screenshot%202026-06-02%20175806.png)
 
 ## Features
 
@@ -27,7 +29,7 @@ Cross-platform audio visualizer written in C/C++ with SDL2, PortAudio, and Dear 
 ## Build (Windows)
 
 ```powershell
-cd c:\Users\user123\Desktop\projects\other_software\visc
+cd visc
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 .\build\Release\visc.exe
@@ -79,4 +81,5 @@ CMakeLists.txt
 
 - MP3 playback loops the selected file.
 - On Windows, **Desktop audio** uses WASAPI loopback on the selected playback device. Something must be playing audio (and the app using that output) or the capture stream stays quiet.
-- InsForge backend files in this repo are unrelated to the visualizer binary.
+- Inspired by the audio visualizer software BeSpec
+- WIP
