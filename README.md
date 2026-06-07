@@ -51,10 +51,9 @@ cmake --build build --config Debug
 | O | Toggle always on top |
 | G | Cycle animated background effect |
 | P | Toggle party mode (auto theme cycling) |
-| [ / ] | Previous / next built-in theme |
 | 1 / 2 / 3 | Vertical / horizontal / circular layout |
 | M | Toggle spectrum ↔ waveform |
-| S | Quick-save `visc.ini` in the working directory |
+| S / I | Toggle stats |
 | Esc | Quit |
 
 Use the **settings** panel to pick a source:
