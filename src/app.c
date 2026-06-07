@@ -21,6 +21,7 @@ struct VisApp {
   VisAnalysis analysis;
   float samples[VISC_FFT_SIZE];
   char mp3_path[512];
+  char config_path[512];
   bool show_panel;
   Uint64 last_ticks;
   float anim_time;
@@ -50,6 +51,7 @@ static void sync_window_modes(VisApp *app) {
     vis_window_apply_transparency(app->window, app->config.transparent);
     app->applied_transparent = app->config.transparent;
   }
+  vis_window_apply_drag_anywhere(app->window, !app->config.transparent && !app->show_panel);
 }
 
 bool vis_app_init(VisApp *app) {
@@ -60,11 +62,23 @@ bool vis_app_init(VisApp *app) {
 
   vis_stats_init();
   vis_config_defaults(&app->config);
+  snprintf(app->config_path, sizeof(app->config_path), "%s", "visc.ini");
   {
-    int theme = VIS_THEME_AURORA;
-    vis_config_load(&app->config, "visc.ini", &theme);
+    int theme = VIS_THEME_VU_METER;
+    bool loaded_config = false;
+    char remembered[512];
+    if (vis_config_load_remembered_path(remembered, sizeof(remembered)) &&
+        vis_config_load(&app->config, remembered, &theme)) {
+      snprintf(app->config_path, sizeof(app->config_path), "%s", remembered);
+      loaded_config = true;
+    } else {
+      loaded_config = vis_config_load(&app->config, app->config_path, &theme);
+    }
     if (!vis_window_create(&app->window, &app->renderer, &app->config)) {
       return false;
+    }
+    if (!loaded_config) {
+      vis_window_set_display_refresh_cap(app->window, &app->config);
     }
     app->applied_transparent = app->config.transparent;
     app->applied_on_top = app->config.always_on_top;
@@ -92,6 +106,16 @@ static void handle_hotkeys(VisApp *app, const SDL_Event *ev) {
   if (ev->type != SDL_KEYDOWN || ev->key.repeat) {
     return;
   }
+  switch (ev->key.keysym.sym) {
+  case SDLK_TAB:
+    app->show_panel = !app->show_panel;
+    return;
+  case SDLK_f:
+    vis_window_toggle_fullscreen_or_minimize(app->window);
+    return;
+  default:
+    break;
+  }
   if (vis_ui_want_capture_keyboard()) {
     return;
   }
@@ -100,9 +124,6 @@ static void handle_hotkeys(VisApp *app, const SDL_Event *ev) {
     SDL_Event quit;
     quit.type = SDL_QUIT;
     SDL_PushEvent(&quit);
-    break;
-  case SDLK_TAB:
-    app->show_panel = !app->show_panel;
     break;
   case SDLK_1:
     app->config.layout = VIS_LAYOUT_VERTICAL;
@@ -118,7 +139,7 @@ static void handle_hotkeys(VisApp *app, const SDL_Event *ev) {
         app->config.mode == VIS_MODE_SPECTRUM ? VIS_MODE_WAVEFORM : VIS_MODE_SPECTRUM;
     break;
   case SDLK_s:
-    vis_config_save(&app->config, "visc.ini", vis_ui_theme_id());
+    app->config.show_stats = !app->config.show_stats;
     break;
   case SDLK_LEFTBRACKET:
     vis_ui_theme_prev(&app->config);
@@ -159,6 +180,12 @@ void vis_app_run(VisApp *app) {
       vis_ui_process_event(&ev);
       if (ev.type == SDL_QUIT) {
         running = false;
+      } else if (ev.type == SDL_WINDOWEVENT &&
+                 (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                  ev.window.event == SDL_WINDOWEVENT_RESIZED)) {
+        SDL_SetRenderDrawColor(app->renderer, 0, 0, 0, 255);
+        SDL_RenderClear(app->renderer);
+        SDL_RenderPresent(app->renderer);
       } else if (ev.type == SDL_KEYDOWN) {
         handle_hotkeys(app, &ev);
       }
@@ -211,7 +238,8 @@ void vis_app_run(VisApp *app) {
     vis_stats_set_bars(app->config.bar_count, bars_drawn);
 
     vis_ui_begin_frame();
-    vis_ui_draw(&app->config, app->mp3_path, sizeof(app->mp3_path), &app->show_panel);
+    vis_ui_draw(&app->config, app->window, app->mp3_path, sizeof(app->mp3_path),
+                app->config_path, sizeof(app->config_path), &app->show_panel);
     sync_window_modes(app);
     vis_ui_draw_stats_overlay(app->config.show_stats);
     vis_ui_render(app->renderer);

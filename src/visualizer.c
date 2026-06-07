@@ -1,6 +1,8 @@
 #include "visualizer.h"
+#include "image_loader.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -18,7 +20,10 @@ typedef struct {
 
 static Star g_stars[STAR_COUNT];
 static bool g_stars_init = false;
-static float g_beat_flash = 0.0f;
+static SDL_Texture *g_asset_texture = NULL;
+static char g_asset_path[512] = "";
+static int g_asset_w = 0;
+static int g_asset_h = 0;
 
 static void init_stars(void) {
   if (g_stars_init) {
@@ -66,6 +71,59 @@ static float analysis_energy(const VisAnalysis *analysis, int bars) {
   return sum / (float)bars;
 }
 
+static void peak_features(const VisAnalysis *analysis, int bars, float *level, float *freq_t) {
+  int peak_i = 0;
+  float peak_v = 0.0f;
+  for (int i = 0; i < bars; i++) {
+    if (analysis->bars[i] > peak_v) {
+      peak_v = analysis->bars[i];
+      peak_i = i;
+    }
+  }
+  if (level) {
+    *level = fminf(fmaxf(peak_v, 0.0f), 1.0f);
+  }
+  if (freq_t) {
+    *freq_t = bars > 1 ? (float)peak_i / (float)(bars - 1) : 0.0f;
+  }
+}
+
+static void unload_asset(void) {
+  if (g_asset_texture) {
+    SDL_DestroyTexture(g_asset_texture);
+    g_asset_texture = NULL;
+  }
+  g_asset_path[0] = '\0';
+  g_asset_w = 0;
+  g_asset_h = 0;
+}
+
+static bool ensure_asset(SDL_Renderer *renderer, const char *path) {
+  if (!path || path[0] == '\0') {
+    unload_asset();
+    return false;
+  }
+  if (g_asset_texture && strcmp(g_asset_path, path) == 0) {
+    return true;
+  }
+  unload_asset();
+  SDL_Surface *surface = vis_image_load_surface(path);
+  if (!surface) {
+    return false;
+  }
+  SDL_SetColorKey(surface, SDL_TRUE, SDL_MapRGB(surface->format, 0, 0, 0));
+  g_asset_texture = SDL_CreateTextureFromSurface(renderer, surface);
+  g_asset_w = surface->w;
+  g_asset_h = surface->h;
+  SDL_FreeSurface(surface);
+  if (!g_asset_texture) {
+    return false;
+  }
+  SDL_SetTextureBlendMode(g_asset_texture, SDL_BLENDMODE_BLEND);
+  snprintf(g_asset_path, sizeof(g_asset_path), "%s", path);
+  return true;
+}
+
 static void clear_frame(SDL_Renderer *renderer, const VisConfig *cfg) {
   if (cfg->transparent) {
     /* Windows color-key transparency: only pure black is see-through. */
@@ -81,6 +139,31 @@ static void draw_solid_bg(SDL_Renderer *renderer, const float rgba[4]) {
   SDL_Color c = color_from_norm(rgba);
   SDL_SetRenderDrawColor(renderer, c.r, c.g, c.b, c.a);
   SDL_RenderClear(renderer);
+}
+
+static void fill_circle(SDL_Renderer *renderer, float cx, float cy, float r, SDL_Color col) {
+  SDL_SetRenderDrawColor(renderer, col.r, col.g, col.b, col.a);
+  int radius = (int)ceilf(r);
+  for (int y = -radius; y <= radius; y++) {
+    float yf = (float)y;
+    float half = sqrtf(fmaxf(r * r - yf * yf, 0.0f));
+    SDL_RenderDrawLineF(renderer, cx - half, cy + yf, cx + half, cy + yf);
+  }
+}
+
+static void draw_circle_outline(SDL_Renderer *renderer, float cx, float cy, float r, SDL_Color col) {
+  SDL_SetRenderDrawColor(renderer, col.r, col.g, col.b, col.a);
+  const int steps = 96;
+  float prev_x = cx + r;
+  float prev_y = cy;
+  for (int i = 1; i <= steps; i++) {
+    float a = (float)(2.0 * M_PI * i / steps);
+    float x = cx + cosf(a) * r;
+    float y = cy + sinf(a) * r;
+    SDL_RenderDrawLineF(renderer, prev_x, prev_y, x, y);
+    prev_x = x;
+    prev_y = y;
+  }
 }
 
 static void draw_animated_bg(SDL_Renderer *renderer, int w, int h, const VisConfig *cfg,
@@ -164,21 +247,31 @@ static void draw_animated_bg(SDL_Renderer *renderer, int w, int h, const VisConf
     }
     break;
   }
-  case VIS_BG_BEAT_FLASH: {
-    if (energy > 0.45f) {
-      g_beat_flash = 1.0f;
+  case VIS_BG_RINGS: {
+    draw_solid_bg(renderer, cfg->color_bg);
+    float peak = 0.0f;
+    float freq_t = 0.0f;
+    peak_features(analysis, bars, &peak, &freq_t);
+    SDL_Color a = bar_color(cfg, freq_t);
+    SDL_Color b = bar_color(cfg, 1.0f - freq_t * 0.65f);
+    float cx = (float)w * 0.5f;
+    float cy = (float)h * 0.5f;
+    float orbit = fminf((float)w, (float)h) * 0.10f * peak;
+    cx += cosf(freq_t * (float)(M_PI * 2.0) + t) * orbit;
+    cy += sinf(freq_t * (float)(M_PI * 2.0) + t) * orbit;
+    float max_r = fminf((float)w, (float)h) * (0.35f + 0.35f * peak);
+    int rings = 5 + (int)(peak * 7.0f);
+    for (int i = 0; i < rings; i++) {
+      float p = fmodf(t * (0.10f + peak * 0.34f) + (float)i / (float)rings + freq_t * 0.35f, 1.0f);
+      SDL_Color col = (i % 2) ? a : b;
+      col.a = (Uint8)(45.0f + 185.0f * peak * (1.0f - p));
+      float radius = 20.0f + p * max_r + sinf(t * 2.0f + freq_t * 8.0f) * peak * 18.0f;
+      draw_circle_outline(renderer, cx, cy, radius, col);
+      if (peak > 0.35f) {
+        col.a = (Uint8)(col.a * 0.35f);
+        draw_circle_outline(renderer, cx, cy, radius + 3.0f + peak * 10.0f, col);
+      }
     }
-    g_beat_flash -= 0.04f * speed;
-    if (g_beat_flash < 0.0f) {
-      g_beat_flash = 0.0f;
-    }
-    memcpy(bg, cfg->color_bg, sizeof(bg));
-    float flash = g_beat_flash * g_beat_flash;
-    bg[0] += cfg->color_bar2[0] * flash * 0.6f;
-    bg[1] += cfg->color_bar2[1] * flash * 0.6f;
-    bg[2] += cfg->color_bar2[2] * flash * 0.6f;
-    bg[3] = cfg->transparent ? 0.15f + 0.35f * flash : 1.0f;
-    draw_solid_bg(renderer, bg);
     break;
   }
   case VIS_BG_OFF:
@@ -277,26 +370,18 @@ static void draw_cloud_column(SDL_Renderer *renderer, float x, float base_y, flo
     float drift = sinf(time_sec * 1.6f + (float)index * 0.25f + t * 3.0f) * (bw * 0.2f);
     float radius = bw * (0.55f + 0.2f * sinf((float)p + time_sec));
     Uint8 alpha = (Uint8)(140.0f + 80.0f * (1.0f - t));
-    SDL_SetRenderDrawColor(renderer, col.r, col.g, col.b, alpha);
-    SDL_FRect puff = {x + drift - radius * 0.5f, y - radius * 0.5f, radius, radius};
-    SDL_RenderFillRectF(renderer, &puff);
-    SDL_FRect puff2 = {x + drift + bw * 0.15f, y - radius * 0.35f, radius * 0.85f, radius * 0.85f};
-    SDL_RenderFillRectF(renderer, &puff2);
+    SDL_Color puff_col = col;
+    puff_col.a = alpha;
+    fill_circle(renderer, x + drift + bw * 0.35f, y, radius * 0.65f, puff_col);
+    puff_col.a = (Uint8)(alpha * 0.75f);
+    fill_circle(renderer, x + drift + bw * 0.62f, y - radius * 0.12f, radius * 0.48f, puff_col);
   }
 }
 
 static void fill_bar(SDL_Renderer *renderer, const VisConfig *cfg, SDL_FRect rect, SDL_Color col) {
-  if (cfg->bar_glow && rect.h > 2.0f) {
-    SDL_SetRenderDrawColor(renderer, col.r, col.g, col.b, (Uint8)(col.a / 3));
-    SDL_FRect glow = {rect.x - 2.0f, rect.y - 2.0f, rect.w + 4.0f, rect.h + 4.0f};
-    SDL_RenderFillRectF(renderer, &glow);
-  }
+  (void)cfg;
   SDL_SetRenderDrawColor(renderer, col.r, col.g, col.b, col.a);
   SDL_RenderFillRectF(renderer, &rect);
-  if (cfg->rounded_bars && rect.h > 6.0f) {
-    SDL_FRect cap = {rect.x, rect.y, rect.w, 5.0f};
-    SDL_RenderFillRectF(renderer, &cap);
-  }
 }
 
 static int draw_vertical(SDL_Renderer *renderer, int w, int h, const VisConfig *cfg,
@@ -359,7 +444,7 @@ static int draw_vertical(SDL_Renderer *renderer, int w, int h, const VisConfig *
 
 static void draw_horizontal(SDL_Renderer *renderer, int w, int h, const VisConfig *cfg,
                             const VisAnalysis *analysis) {
-  int bars = cfg->bar_count;
+  int bars = clamp_bar_count(cfg->bar_count);
   float gap = cfg->bar_gap_px;
   float bh = cfg->bar_width_px;
   if (bh <= 0.0f) {
@@ -393,7 +478,7 @@ static void draw_horizontal(SDL_Renderer *renderer, int w, int h, const VisConfi
 
 static void draw_circular(SDL_Renderer *renderer, int w, int h, const VisConfig *cfg,
                           const VisAnalysis *analysis) {
-  int bars = cfg->bar_count;
+  int bars = clamp_bar_count(cfg->bar_count);
   float cx = (float)w * 0.5f;
   float cy = (float)h * 0.5f;
   float inner = fminf((float)w, (float)h) * 0.18f;
@@ -421,19 +506,264 @@ static void draw_circular(SDL_Renderer *renderer, int w, int h, const VisConfig 
   }
 }
 
+static void draw_reactive_asset(SDL_Renderer *renderer, int w, int h, const VisConfig *cfg,
+                                const VisAnalysis *analysis, float time_sec) {
+  if (!cfg->asset_enabled || !ensure_asset(renderer, cfg->asset_path)) {
+    return;
+  }
+  float energy = analysis_energy(analysis, clamp_bar_count(cfg->bar_count));
+  float scale = cfg->asset_scale * (0.75f + fminf(energy * 1.4f, 0.9f));
+  float dst_w = (float)g_asset_w * scale;
+  float dst_h = (float)g_asset_h * scale;
+  if (dst_w > (float)w * 0.9f) {
+    float s = ((float)w * 0.9f) / dst_w;
+    dst_w *= s;
+    dst_h *= s;
+  }
+  if (dst_h > (float)h * 0.9f) {
+    float s = ((float)h * 0.9f) / dst_h;
+    dst_w *= s;
+    dst_h *= s;
+  }
+  SDL_FRect dst = {((float)w - dst_w) * 0.5f, ((float)h - dst_h) * 0.5f, dst_w, dst_h};
+  double angle = (double)(time_sec * cfg->asset_spin + energy * 80.0f);
+  SDL_RendererFlip flip = SDL_FLIP_NONE;
+  if (cfg->asset_flip_on_beat && energy > 0.42f) {
+    flip = SDL_FLIP_HORIZONTAL;
+  }
+  SDL_RenderCopyExF(renderer, g_asset_texture, NULL, &dst, angle, NULL, flip);
+}
+
+static void draw_sorting_demo(SDL_Renderer *renderer, int w, int h, const VisConfig *cfg,
+                              float time_sec) {
+  enum { count = 48 };
+  static float values[count];
+  static bool init = false;
+  static int pass = 0;
+  static int scan = 0;
+  static float last_time = 0.0f;
+  static float accum = 0.0f;
+
+  if (!init) {
+    for (int i = 0; i < count; i++) {
+      int v = (i * 37 + 17) % count;
+      values[i] = 0.08f + 0.92f * ((float)(v + 1) / (float)count);
+    }
+    init = true;
+    last_time = time_sec;
+  }
+
+  float dt = time_sec - last_time;
+  if (dt < 0.0f || dt > 0.25f) {
+    dt = 0.016f;
+  }
+  last_time = time_sec;
+  accum += dt;
+  while (accum >= 0.035f) {
+    int limit = count - pass - 1;
+    if (limit <= 0) {
+      init = false;
+      break;
+    }
+    if (values[scan] > values[scan + 1]) {
+      float tmp = values[scan];
+      values[scan] = values[scan + 1];
+      values[scan + 1] = tmp;
+    }
+    scan++;
+    if (scan >= limit) {
+      scan = 0;
+      pass++;
+    }
+    accum -= 0.035f;
+  }
+
+  float area_w = fminf((float)w * 0.82f, 820.0f);
+  float area_h = fminf((float)h * 0.62f, 420.0f);
+  float start_x = ((float)w - area_w) * 0.5f;
+  float base_y = ((float)h + area_h) * 0.5f;
+  float bw = area_w / (float)count;
+  int active = scan;
+  for (int i = 0; i < count; i++) {
+    float value = values[i];
+    SDL_Color col = bar_color(cfg, (float)i / (float)(count - 1));
+    if (i == active || i == active + 1) {
+      col.r = 255;
+      col.g = 245;
+      col.b = 170;
+    }
+    SDL_SetRenderDrawColor(renderer, col.r, col.g, col.b, 210);
+    SDL_FRect rect = {start_x + (float)i * bw + 1.0f, base_y - value * area_h, bw - 2.0f,
+                      value * area_h};
+    SDL_RenderFillRectF(renderer, &rect);
+  }
+}
+
+static void draw_wave_path_demo(SDL_Renderer *renderer, int w, int h, const VisConfig *cfg,
+                                const VisAnalysis *analysis, float time_sec) {
+  int points = clamp_bar_count(cfg->bar_count);
+  float x0 = (float)w * 0.12f;
+  float x1 = (float)w * 0.88f;
+  float cy = (float)h * 0.26f;
+  float amp = fminf((float)h * 0.16f, 120.0f);
+  float energy = analysis_energy(analysis, clamp_bar_count(cfg->bar_count));
+  SDL_Color col = bar_color(cfg, 0.5f);
+  SDL_SetRenderDrawColor(renderer, col.r, col.g, col.b, 225);
+  for (int i = 1; i < points; i++) {
+    float a = (float)(i - 1) / (float)(points - 1);
+    float b = (float)i / (float)(points - 1);
+    float ya = cy + sinf(a * 18.0f + time_sec * 3.0f) * amp * (0.35f + energy);
+    float yb = cy + sinf(b * 18.0f + time_sec * 3.0f) * amp * (0.35f + energy);
+    SDL_RenderDrawLineF(renderer, x0 + (x1 - x0) * a, ya, x0 + (x1 - x0) * b, yb);
+  }
+}
+
+static void draw_radial_graph_demo(SDL_Renderer *renderer, int w, int h, const VisConfig *cfg,
+                                   const VisAnalysis *analysis, float time_sec) {
+  int nodes = clamp_bar_count(cfg->bar_count);
+  float cx = (float)w * 0.5f;
+  float cy = (float)h * 0.5f;
+  float base = fminf((float)w, (float)h) * 0.22f;
+  float amp = fminf((float)w, (float)h) * 0.24f;
+  float prev_x = 0.0f, prev_y = 0.0f, first_x = 0.0f, first_y = 0.0f;
+  for (int i = 0; i < nodes; i++) {
+    int bi = (i * cfg->bar_count) / nodes;
+    float level = analysis->bars[bi];
+    float ang = (float)(2.0 * M_PI * i / nodes) + time_sec * 0.18f;
+    float r = base + amp * level;
+    float x = cx + cosf(ang) * r;
+    float y = cy + sinf(ang) * r;
+    SDL_Color col = bar_color(cfg, (float)i / (float)(nodes - 1));
+    SDL_SetRenderDrawColor(renderer, col.r, col.g, col.b, 210);
+    if (i > 0) {
+      SDL_RenderDrawLineF(renderer, prev_x, prev_y, x, y);
+    } else {
+      first_x = x;
+      first_y = y;
+    }
+    if (level > 0.08f) {
+      fill_circle(renderer, x, y, 2.5f + level * 8.0f, col);
+    }
+    prev_x = x;
+    prev_y = y;
+  }
+  SDL_Color end = bar_color(cfg, 0.9f);
+  end.a = 210;
+  SDL_SetRenderDrawColor(renderer, end.r, end.g, end.b, end.a);
+  SDL_RenderDrawLineF(renderer, prev_x, prev_y, first_x, first_y);
+}
+
+static void draw_particle_field_demo(SDL_Renderer *renderer, int w, int h, const VisConfig *cfg,
+                                     const VisAnalysis *analysis, float time_sec) {
+  int count = clamp_bar_count(cfg->bar_count);
+  float energy = analysis_energy(analysis, clamp_bar_count(cfg->bar_count));
+  float peak = 0.0f, freq_t = 0.0f;
+  peak_features(analysis, clamp_bar_count(cfg->bar_count), &peak, &freq_t);
+  float cx = (float)w * (0.25f + freq_t * 0.5f);
+  float cy = (float)h * 0.5f;
+  for (int i = 0; i < count; i++) {
+    int bi = (i * cfg->bar_count) / count;
+    float level = analysis->bars[bi];
+    float seed = (float)i * 12.9898f;
+    float a = seed + time_sec * (0.25f + energy * 1.8f);
+    float lane = (float)(i % 17) / 17.0f;
+    float r = fminf((float)w, (float)h) * (0.08f + lane * 0.55f) * (0.55f + peak);
+    float x = cx + cosf(a) * r + sinf(time_sec + seed) * level * 90.0f;
+    float y = cy + sinf(a * 0.83f) * r + cosf(time_sec * 1.3f + seed) * level * 90.0f;
+    SDL_Color col = bar_color(cfg, lane);
+    col.a = (Uint8)(70.0f + fminf(level * 260.0f, 180.0f));
+    fill_circle(renderer, x, y, 1.5f + level * 7.0f, col);
+  }
+}
+
+static void draw_binary_tree_branch(SDL_Renderer *renderer, const VisConfig *cfg,
+                                    const VisAnalysis *analysis, int depth, int max_depth,
+                                    float x, float y, float len, float angle, int index,
+                                    float growth) {
+  if (depth > max_depth || len < 3.0f) {
+    return;
+  }
+  int bi = (index * cfg->bar_count / 63) % cfg->bar_count;
+  float level = analysis->bars[bi];
+  float x2 = x + cosf(angle) * len;
+  float y2 = y + sinf(angle) * len;
+  SDL_Color col = bar_color(cfg, (float)depth / (float)max_depth);
+  col.a = (Uint8)(120.0f + level * 100.0f);
+  SDL_SetRenderDrawColor(renderer, col.r, col.g, col.b, col.a);
+  SDL_RenderDrawLineF(renderer, x, y, x2, y2);
+  float spread = 0.32f + level * 0.50f + growth * 0.20f;
+  float next_len = len * (0.64f + level * 0.08f + growth * 0.04f);
+  draw_binary_tree_branch(renderer, cfg, analysis, depth + 1, max_depth, x2, y2, next_len,
+                          angle - spread, index * 2 + 1, growth);
+  draw_binary_tree_branch(renderer, cfg, analysis, depth + 1, max_depth, x2, y2, next_len,
+                          angle + spread, index * 2 + 2, growth);
+}
+
+static void draw_binary_tree_demo(SDL_Renderer *renderer, int w, int h, const VisConfig *cfg,
+                                  const VisAnalysis *analysis, float time_sec) {
+  static float growth = 0.0f;
+  static float last_time = 0.0f;
+  float dt = time_sec - last_time;
+  if (dt < 0.0f || dt > 0.25f) {
+    dt = 0.016f;
+  }
+  last_time = time_sec;
+  float energy = analysis_energy(analysis, clamp_bar_count(cfg->bar_count));
+  growth += (energy - growth) * fminf(dt * 8.0f, 1.0f);
+  int depth = 7 + (int)(growth * 4.0f);
+  float len = fminf((float)w, (float)h) * (0.15f + growth * 0.13f);
+  draw_binary_tree_branch(renderer, cfg, analysis, 0, depth, (float)w * 0.5f, (float)h * 0.86f,
+                          len, -(float)M_PI * 0.5f, 0, growth);
+}
+
+static void draw_demo(SDL_Renderer *renderer, int w, int h, const VisConfig *cfg,
+                      const VisAnalysis *analysis, float time_sec) {
+  switch (cfg->demo_mode) {
+  case VIS_DEMO_SORTING:
+    (void)analysis;
+    draw_sorting_demo(renderer, w, h, cfg, time_sec);
+    break;
+  case VIS_DEMO_OFF:
+  default:
+    break;
+  }
+}
+
 int vis_draw(SDL_Renderer *renderer, int width, int height, const VisConfig *cfg,
              const VisAnalysis *analysis, float time_sec, float dt_sec) {
   clear_frame(renderer, cfg);
   draw_animated_bg(renderer, width, height, cfg, analysis, time_sec);
 
   int drawn = clamp_bar_count(cfg->bar_count);
+  if (cfg->demo_mode != VIS_DEMO_OFF) {
+    draw_demo(renderer, width, height, cfg, analysis, time_sec);
+    draw_reactive_asset(renderer, width, height, cfg, analysis, time_sec);
+    return 0;
+  }
+
   switch (cfg->layout) {
   case VIS_LAYOUT_HORIZONTAL:
     draw_horizontal(renderer, width, height, cfg, analysis);
-    drawn = bars_that_fit(width, cfg, NULL, NULL);
+    drawn = clamp_bar_count(cfg->bar_count);
     break;
   case VIS_LAYOUT_CIRCULAR:
     draw_circular(renderer, width, height, cfg, analysis);
+    drawn = clamp_bar_count(cfg->bar_count);
+    break;
+  case VIS_LAYOUT_WAVE_PATH:
+    draw_wave_path_demo(renderer, width, height, cfg, analysis, time_sec);
+    drawn = 1;
+    break;
+  case VIS_LAYOUT_RADIAL_GRAPH:
+    draw_radial_graph_demo(renderer, width, height, cfg, analysis, time_sec);
+    drawn = clamp_bar_count(cfg->bar_count);
+    break;
+  case VIS_LAYOUT_PARTICLES:
+    draw_particle_field_demo(renderer, width, height, cfg, analysis, time_sec);
+    drawn = clamp_bar_count(cfg->bar_count);
+    break;
+  case VIS_LAYOUT_BINARY_TREE:
+    draw_binary_tree_demo(renderer, width, height, cfg, analysis, time_sec);
     drawn = clamp_bar_count(cfg->bar_count);
     break;
   case VIS_LAYOUT_VERTICAL:
@@ -441,5 +771,6 @@ int vis_draw(SDL_Renderer *renderer, int width, int height, const VisConfig *cfg
     drawn = draw_vertical(renderer, width, height, cfg, analysis, time_sec, dt_sec);
     break;
   }
+  draw_reactive_asset(renderer, width, height, cfg, analysis, time_sec);
   return drawn;
 }

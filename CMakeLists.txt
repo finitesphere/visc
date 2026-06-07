@@ -73,6 +73,7 @@ set(VISC_SOURCES
   src/window.c
   src/stats.c
   src/ui.cpp
+  src/image_loader.cpp
   src/audio_loopback.cpp
   vendor/kiss_fft.c
   vendor/kiss_fftr.c
@@ -86,6 +87,7 @@ set(VISC_SOURCES
 )
 
 add_executable(visc ${VISC_SOURCES})
+set_target_properties(visc PROPERTIES WIN32_EXECUTABLE TRUE)
 
 target_include_directories(visc PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -94,15 +96,14 @@ target_include_directories(visc PRIVATE
   ${imgui_SOURCE_DIR}/backends
 )
 
-target_compile_definitions(visc PRIVATE SDL_MAIN_HANDLED)
-
 target_link_libraries(visc PRIVATE
+  SDL2::SDL2main
   SDL2::SDL2-static
   portaudio_static
 )
 
 if(WIN32)
-  target_link_libraries(visc PRIVATE winmm ole32 uuid setupapi version imm32 avrt)
+  target_link_libraries(visc PRIVATE winmm ole32 uuid setupapi version imm32 avrt gdiplus)
   target_compile_definitions(visc PRIVATE VISC_HAS_LOOPBACK=1)
 endif()
 

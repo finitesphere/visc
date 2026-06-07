@@ -5,6 +5,7 @@
 #include "config.h"
 #include "stats.h"
 #include "themes.h"
+#include "window.h"
 
 #include <imgui.h>
 #include <imgui_impl_sdl2.h>
@@ -19,10 +20,63 @@ extern "C" {
 }
 
 static bool g_inited = false;
-static int g_selected_theme = VIS_THEME_AURORA;
+static int g_selected_theme = VIS_THEME_VU_METER;
 static bool g_theme_custom = false;
 
 static void mark_theme_custom(void) { g_theme_custom = true; }
+
+static void help_marker(const char *text) {
+  ImGui::SameLine();
+  ImGui::TextDisabled("(?)");
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip("%s", text);
+  }
+}
+
+static void draw_window_controls(SDL_Window *window) {
+  ImGuiIO &io = ImGui::GetIO();
+  if (io.MousePos.x < 0.0f || io.MousePos.y < 0.0f || io.MousePos.x > io.DisplaySize.x ||
+      io.MousePos.y > io.DisplaySize.y) {
+    return;
+  }
+
+  const float size = 28.0f;
+  const float gap = 4.0f;
+  ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - (size * 3.0f + gap * 2.0f) - 10.0f, 8.0f),
+                          ImGuiCond_Always);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, 0.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.03f, 0.04f, 0.05f, 0.38f));
+  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.08f, 0.09f, 0.11f, 0.72f));
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.24f, 0.29f, 0.95f));
+  ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.26f, 0.31f, 0.38f, 1.0f));
+
+  if (ImGui::Begin("##visc_window_controls", nullptr,
+                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav |
+                       ImGuiWindowFlags_NoFocusOnAppearing)) {
+    if (ImGui::Button("_", ImVec2(size, size))) {
+      vis_window_minimize(window);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("[]", ImVec2(size, size))) {
+      vis_window_toggle_fullscreen_or_minimize(window);
+    }
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.72f, 0.12f, 0.12f, 0.95f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.82f, 0.16f, 0.16f, 1.0f));
+    if (ImGui::Button("X", ImVec2(size, size))) {
+      SDL_Event quit;
+      quit.type = SDL_QUIT;
+      SDL_PushEvent(&quit);
+    }
+    ImGui::PopStyleColor(2);
+  }
+  ImGui::End();
+  ImGui::PopStyleColor(4);
+  ImGui::PopStyleVar(3);
+}
 
 void vis_ui_set_theme(int theme_id) {
   if (theme_id >= 0 && theme_id < vis_theme_count()) {
@@ -126,23 +180,37 @@ void vis_ui_draw_stats_overlay(bool show) {
   ImGui::PopStyleVar();
 }
 
-void vis_ui_draw(VisConfig *cfg, char *file_path, size_t file_path_size, bool *show_panel) {
+void vis_ui_draw(VisConfig *cfg, SDL_Window *window, char *file_path, size_t file_path_size,
+                 char *config_path, size_t config_path_size, bool *show_panel) {
+  draw_window_controls(window);
+
   if (!*show_panel) {
+    if (cfg->transparent) {
+      return;
+    }
     ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_Always);
     if (ImGui::Begin("visc_hint", nullptr,
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                          ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav)) {
-      ImGui::Text("Tab: panel | I: stats | T: transparent | O: on-top | Esc: quit");
+      ImGui::Text("Tab: panel | S/I: stats | T: transparent | O: on-top | Esc: quit");
     }
     ImGui::End();
     return;
   }
 
-  ImGui::SetNextWindowSize(ImVec2(440, 720), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(560, 620), ImGuiCond_FirstUseEver);
   if (!ImGui::Begin("visc settings", show_panel)) {
     ImGui::End();
     return;
   }
+  ImGui::TextDisabled("Tab toggles this panel.");
+  ImGui::SameLine(ImGui::GetWindowWidth() - 62.0f);
+  if (ImGui::Button("Close")) {
+    *show_panel = false;
+    ImGui::End();
+    return;
+  }
+  ImGui::Separator();
 
   /* Themes first — easy to find without scrolling past audio controls. */
   ImGui::Text("Themes");
@@ -171,23 +239,10 @@ void vis_ui_draw(VisConfig *cfg, char *file_path, size_t file_path_size, bool *s
   }
   const char *theme_preview =
       g_theme_custom ? "Custom (manual tweaks)" : vis_theme_name((VisThemeId)g_selected_theme);
-  if (ImGui::BeginCombo("Theme (list)", theme_preview)) {
-    for (int i = 0; i < vis_theme_count(); i++) {
-      bool picked = !g_theme_custom && g_selected_theme == i;
-      if (ImGui::Selectable(vis_theme_name((VisThemeId)i), picked)) {
-        g_selected_theme = i;
-        g_theme_custom = false;
-        vis_theme_apply(cfg, (VisThemeId)i);
-      }
-      if (picked) {
-        ImGui::SetItemDefaultFocus();
-      }
-    }
-    ImGui::EndCombo();
-  }
+  ImGui::TextDisabled("Current: %s", theme_preview);
 
   ImGui::Separator();
-  ImGui::Text("Audio source");
+  if (ImGui::CollapsingHeader("Audio source", ImGuiTreeNodeFlags_DefaultOpen)) {
   static VisAudioDevice devices[64];
   static int device_count = 0;
   static int selected_device = 0;
@@ -205,6 +260,7 @@ void vis_ui_draw(VisConfig *cfg, char *file_path, size_t file_path_size, bool *s
   if (ImGui::Button("Refresh devices")) {
     devices_dirty = true;
   }
+  help_marker("Refreshes the available audio devices.");
 
 #ifdef VISC_HAS_LOOPBACK
   const char *source_labels[] = {"Microphone / line in", "Desktop audio (speakers)", "MP3 file"};
@@ -218,6 +274,7 @@ void vis_ui_draw(VisConfig *cfg, char *file_path, size_t file_path_size, bool *s
     devices_dirty = true;
     selected_device = 0;
   }
+  help_marker("Chooses the audio source type.");
 
   if (source_kind == 0) {
     if (device_count > 0) {
@@ -239,15 +296,13 @@ void vis_ui_draw(VisConfig *cfg, char *file_path, size_t file_path_size, bool *s
       if (ImGui::Button("Start capture")) {
         vis_audio_start_device(devices[selected_device].index);
       }
+      help_marker("Starts listening to the selected input device.");
     } else {
       ImGui::TextDisabled("No input devices found");
     }
   }
 #ifdef VISC_HAS_LOOPBACK
   else if (source_kind == 1) {
-    ImGui::TextWrapped(
-        "Captures what Windows plays on the selected output (e.g. your DAC). "
-        "Audio must be playing on that device.");
     if (device_count > 0) {
       if (selected_device >= device_count) {
         selected_device = 0;
@@ -267,6 +322,7 @@ void vis_ui_draw(VisConfig *cfg, char *file_path, size_t file_path_size, bool *s
       if (ImGui::Button("Start desktop capture")) {
         vis_audio_start_loopback(devices[selected_device].index);
       }
+      help_marker("Starts listening to the selected playback device.");
     } else {
       ImGui::TextDisabled("No playback devices found");
     }
@@ -280,20 +336,24 @@ void vis_ui_draw(VisConfig *cfg, char *file_path, size_t file_path_size, bool *s
         snprintf(file_path, file_path_size, "%s", picked);
       }
     }
+    help_marker("Chooses an MP3 file.");
     if (ImGui::Button("Play file")) {
       if (file_path[0] != '\0') {
         vis_audio_start_file(file_path);
       }
     }
+    help_marker("Starts playback from the selected MP3.");
   }
 
   if (ImGui::Button("Stop audio")) {
     vis_audio_stop();
   }
+  help_marker("Stops the current audio source.");
   ImGui::TextWrapped("%s", vis_audio_current_label());
+  }
 
   ImGui::Separator();
-  ImGui::Text("Window & fun");
+  if (ImGui::CollapsingHeader("Window and overlays", ImGuiTreeNodeFlags_DefaultOpen)) {
   if (ImGui::Checkbox("Transparent overlay", &cfg->transparent)) {
   }
   ImGui::SameLine();
@@ -304,10 +364,10 @@ void vis_ui_draw(VisConfig *cfg, char *file_path, size_t file_path_size, bool *s
   }
   if (ImGui::Checkbox("Always on top", &cfg->always_on_top)) {
   }
+  help_marker("Keeps the app above normal windows.");
   if (ImGui::Checkbox("Stats overlay (bottom-right)", &cfg->show_stats)) {
   }
-  if (ImGui::Checkbox("Bar glow", &cfg->bar_glow)) {
-  }
+  help_marker("Shows performance and audio stats.");
   if (ImGui::Checkbox("Party mode (auto themes)", &cfg->party_mode)) {
   }
   if (ImGui::IsItemHovered()) {
@@ -316,11 +376,13 @@ void vis_ui_draw(VisConfig *cfg, char *file_path, size_t file_path_size, bool *s
 
   int bg_anim = (int)cfg->bg_anim;
   const char *bg_names[] = {"Off",           "Gradient shift", "Audio pulse", "Starfield",
-                            "Rainbow wash", "Beat flash"};
+                            "Rainbow wash", "Beat rings"};
   if (ImGui::Combo("Animated background", &bg_anim, bg_names, VIS_BG_COUNT)) {
     cfg->bg_anim = (VisBgAnim)bg_anim;
   }
+  help_marker("Animates the background behind the visualizer.");
   ImGui::SliderFloat("FX speed", &cfg->bg_anim_speed, 0.25f, 3.0f, "%.2f");
+  help_marker("Controls animated background speed.");
 
   int bar_style = (int)cfg->bar_style;
   const char *style_names[] = {"Solid", "Fluid (water)", "Cloud (soft)"};
@@ -331,15 +393,45 @@ void vis_ui_draw(VisConfig *cfg, char *file_path, size_t file_path_size, bool *s
     ImGui::SetTooltip("Fluid and cloud use springy motion; best with vertical layout.");
   }
 
+  ImGui::Spacing();
+  ImGui::Checkbox("Reactive asset", &cfg->asset_enabled);
+  help_marker("Displays an image that responds to audio energy.");
+  ImGui::SameLine();
+  if (ImGui::Button("Choose image...")) {
+    char picked[512];
+    if (vis_ui_pick_asset_file(picked, sizeof(picked))) {
+      snprintf(cfg->asset_path, sizeof(cfg->asset_path), "%s", picked);
+      cfg->asset_enabled = true;
+    }
+  }
+  if (cfg->asset_path[0] != '\0') {
+    ImGui::TextWrapped("%s", cfg->asset_path);
+  } else {
+    ImGui::TextDisabled("No image selected.");
+  }
+  ImGui::SliderFloat("Asset scale", &cfg->asset_scale, 0.1f, 4.0f, "%.2f");
+  ImGui::SliderFloat("Asset spin", &cfg->asset_spin, -180.0f, 180.0f, "%.0f deg/s");
+  ImGui::Checkbox("Flip on beat", &cfg->asset_flip_on_beat);
+  help_marker("Flips the image horizontally when the audio level spikes.");
+
+  int demo = (int)cfg->demo_mode;
+  const char *demo_names[] = {"Off", "Sorting algorithm"};
+  if (ImGui::Combo("Algorithm demo", &demo, demo_names, VIS_DEMO_COUNT)) {
+    cfg->demo_mode = (VisDemoMode)demo;
+  }
+  help_marker("Shows a standalone algorithm visualization instead of the audio bars.");
+  }
+
   ImGui::Separator();
-  ImGui::Text("Display");
+  if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) {
   if (g_theme_custom) {
     ImGui::TextDisabled("Using custom tweaks — pick a theme at the top to reset.");
   }
 
   if (ImGui::CollapsingHeader("Customize", ImGuiTreeNodeFlags_DefaultOpen)) {
     int layout = (int)cfg->layout;
-    const char *layouts[] = {"Vertical", "Horizontal", "Circular"};
+    const char *layouts[] = {"Vertical", "Horizontal", "Circular", "Wave path",
+                             "Radial graph", "Particles", "Binary tree"};
     if (ImGui::Combo("Layout", &layout, layouts, VIS_LAYOUT_COUNT)) {
       cfg->layout = (VisLayout)layout;
       if (ImGui::IsItemEdited()) {
@@ -408,28 +500,31 @@ void vis_ui_draw(VisConfig *cfg, char *file_path, size_t file_path_size, bool *s
     if (ImGui::Checkbox("Mirrored", &cfg->mirrored) && ImGui::IsItemEdited()) {
       mark_theme_custom();
     }
-    if (ImGui::Checkbox("Rounded tops", &cfg->rounded_bars) && ImGui::IsItemEdited()) {
-      mark_theme_custom();
-    }
     if (ImGui::Checkbox("Peak hold", &cfg->show_peaks) && ImGui::IsItemEdited()) {
       mark_theme_custom();
     }
-    ImGui::SliderFloat("FPS cap", &cfg->fps_cap, 30.0f, 144.0f, "%.0f");
+    ImGui::SliderFloat("FPS cap", &cfg->fps_cap, 30.0f, 360.0f, "%.0f");
+  }
   }
 
   ImGui::Separator();
   if (ImGui::Button("Save settings...")) {
     char path[512];
-    if (vis_ui_pick_config_save(path, sizeof(path))) {
-      vis_config_save(cfg, path, vis_ui_theme_id());
+    if (vis_ui_pick_config_save(path, sizeof(path), config_path)) {
+      if (vis_config_save(cfg, path, vis_ui_theme_id())) {
+        snprintf(config_path, config_path_size, "%s", path);
+        vis_config_save_remembered_path(config_path);
+      }
     }
   }
   ImGui::SameLine();
   if (ImGui::Button("Load settings...")) {
     char path[512];
     if (vis_ui_pick_config_load(path, sizeof(path))) {
-      int theme = VIS_THEME_AURORA;
+      int theme = VIS_THEME_VU_METER;
       if (vis_config_load(cfg, path, &theme)) {
+        snprintf(config_path, config_path_size, "%s", path);
+        vis_config_save_remembered_path(config_path);
         vis_ui_set_theme(theme);
       }
     }
@@ -465,8 +560,20 @@ bool vis_ui_pick_mp3_file(char *out_path, size_t out_size) {
   return true;
 }
 
-bool vis_ui_pick_config_save(char *out_path, size_t out_size) {
-  const char *sel = tinyfd_saveFileDialog("Save visc settings", "visc.ini", 0, nullptr, nullptr);
+bool vis_ui_pick_asset_file(char *out_path, size_t out_size) {
+  const char *filters[] = {"*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif", "*.tif", "*.tiff"};
+  const char *sel =
+      tinyfd_openFileDialog("Select reactive image", "", 7, filters, "Image files", 0);
+  if (!sel) {
+    return false;
+  }
+  snprintf(out_path, out_size, "%s", sel);
+  return true;
+}
+
+bool vis_ui_pick_config_save(char *out_path, size_t out_size, const char *default_path) {
+  const char *suggested = default_path && default_path[0] != '\0' ? default_path : "visc.ini";
+  const char *sel = tinyfd_saveFileDialog("Save visc settings", suggested, 0, nullptr, nullptr);
   if (!sel) {
     return false;
   }
